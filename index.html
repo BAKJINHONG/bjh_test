@@ -1,0 +1,446 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Play, RotateCcw, Pause, ArrowLeft, ArrowRight, ArrowDown, RefreshCw, ArrowUp } from 'lucide-react';
+
+// --- 상수 및 데이터 ---
+const COLS = 10;
+const ROWS = 20;
+const BLOCK_SIZE = 25; // 기본 블록 크기 (반응형으로 조정됨)
+
+const SHAPES = {
+  I: { shape: [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]], color: 'bg-cyan-400' },
+  J: { shape: [[1, 0, 0], [1, 1, 1], [0, 0, 0]], color: 'bg-blue-500' },
+  L: { shape: [[0, 0, 1], [1, 1, 1], [0, 0, 0]], color: 'bg-orange-500' },
+  O: { shape: [[1, 1], [1, 1]], color: 'bg-yellow-400' },
+  S: { shape: [[0, 1, 1], [1, 1, 0], [0, 0, 0]], color: 'bg-green-500' },
+  T: { shape: [[0, 1, 0], [1, 1, 1], [0, 0, 0]], color: 'bg-purple-500' },
+  Z: { shape: [[1, 1, 0], [0, 1, 1], [0, 0, 0]], color: 'bg-red-500' },
+};
+
+const SHAPE_KEYS = Object.keys(SHAPES);
+
+const createBoard = () => Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+
+const getRandomShape = () => {
+  const key = SHAPE_KEYS[Math.floor(Math.random() * SHAPE_KEYS.length)];
+  return {
+    key,
+    shape: SHAPES[key].shape,
+    color: SHAPES[key].color,
+  };
+};
+
+export default function App() {
+  const [grid, setGrid] = useState(createBoard());
+  const [activePiece, setActivePiece] = useState(null);
+  const [nextPiece, setNextPiece] = useState(getRandomShape());
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [score, setScore] = useState(0);
+  const [level, setLevel] = useState(1);
+  const [gameOver, setGameOver] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [gameStarted, setGameStarted] = useState(false);
+  
+  // 게임 루프 속도 (레벨에 따라 빨라짐)
+  const speed = Math.max(100, 800 - (level - 1) * 50);
+  
+  const requestRef = useRef();
+  const lastTimeRef = useRef();
+
+  // --- 게임 로직 ---
+
+  const spawnPiece = useCallback(() => {
+    const piece = nextPiece;
+    const newNext = getRandomShape();
+    
+    setNextPiece(newNext);
+    setActivePiece(piece);
+    
+    // 중앙 상단에서 시작
+    const startX = Math.floor(COLS / 2) - Math.floor(piece.shape[0].length / 2);
+    const startY = 0; // 맨 위
+
+    // 생성하자마자 충돌하면 게임 오버
+    if (checkCollision(piece.shape, startX, startY, grid)) {
+      setGameOver(true);
+      setGameStarted(false);
+    } else {
+      setPosition({ x: startX, y: startY });
+    }
+  }, [nextPiece, grid]);
+
+  const startGame = () => {
+    setGrid(createBoard());
+    setScore(0);
+    setLevel(1);
+    setGameOver(false);
+    setIsPaused(false);
+    setGameStarted(true);
+    setNextPiece(getRandomShape());
+    // spawnPiece는 useEffect나 루프 첫 진입시 호출되도록 유도
+    setActivePiece(null); 
+  };
+
+  const checkCollision = (shape, x, y, currentGrid) => {
+    for (let r = 0; r < shape.length; r++) {
+      for (let c = 0; c < shape[r].length; c++) {
+        if (shape[r][c]) {
+          const newX = x + c;
+          const newY = y + r;
+          
+          // 벽 충돌, 바닥 충돌, 이미 있는 블록 충돌 확인
+          if (
+            newX < 0 || 
+            newX >= COLS || 
+            newY >= ROWS ||
+            (newY >= 0 && currentGrid[newY][newX])
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  const lockPiece = useCallback(() => {
+    const newGrid = grid.map(row => [...row]);
+    const { shape } = activePiece;
+    
+    for (let r = 0; r < shape.length; r++) {
+      for (let c = 0; c < shape[r].length; c++) {
+        if (shape[r][c]) {
+          const drawY = position.y + r;
+          const drawX = position.x + c;
+          if (drawY >= 0 && drawY < ROWS && drawX >= 0 && drawX < COLS) {
+            newGrid[drawY][drawX] = activePiece.key; // 색상을 위해 키 저장
+          }
+        }
+      }
+    }
+
+    // 줄 삭제 로직
+    let linesCleared = 0;
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (newGrid[r].every(cell => cell !== 0)) {
+        newGrid.splice(r, 1);
+        newGrid.unshift(Array(COLS).fill(0));
+        linesCleared++;
+        r++; // 같은 인덱스 다시 검사
+      }
+    }
+
+    if (linesCleared > 0) {
+      setScore(prev => prev + (linesCleared * 100 * level));
+      setLevel(prev => Math.floor((score + linesCleared * 100) / 500) + 1);
+    }
+
+    setGrid(newGrid);
+    spawnPiece();
+  }, [activePiece, grid, position, level, score, spawnPiece]);
+
+  const move = useCallback((dirX, dirY) => {
+    if (gameOver || isPaused || !activePiece) return;
+
+    const newX = position.x + dirX;
+    const newY = position.y + dirY;
+
+    if (!checkCollision(activePiece.shape, newX, newY, grid)) {
+      setPosition({ x: newX, y: newY });
+      return true; // 이동 성공
+    } else if (dirY > 0) {
+      // 아래로 이동하다 충돌하면 고정
+      lockPiece();
+      return false;
+    }
+    return false;
+  }, [activePiece, grid, gameOver, isPaused, position, lockPiece]);
+
+  const rotate = useCallback(() => {
+    if (gameOver || isPaused || !activePiece) return;
+
+    const shape = activePiece.shape;
+    // 행렬 회전 (Transpose + Reverse)
+    const newShape = shape[0].map((_, index) => shape.map(row => row[index]).reverse());
+
+    // 회전 후 충돌 체크 (Wall kick - 간단하게 좌우로 밀어보기)
+    if (!checkCollision(newShape, position.x, position.y, grid)) {
+      setActivePiece({ ...activePiece, shape: newShape });
+    } else {
+      // 벽 차기 (Wall Kick) 시도: 왼쪽이나 오른쪽으로 1칸 밀어서 가능한지 확인
+      if (!checkCollision(newShape, position.x - 1, position.y, grid)) {
+        setPosition(prev => ({ ...prev, x: prev.x - 1 }));
+        setActivePiece({ ...activePiece, shape: newShape });
+      } else if (!checkCollision(newShape, position.x + 1, position.y, grid)) {
+        setPosition(prev => ({ ...prev, x: prev.x + 1 }));
+        setActivePiece({ ...activePiece, shape: newShape });
+      }
+    }
+  }, [activePiece, grid, gameOver, isPaused, position]);
+
+  const hardDrop = useCallback(() => {
+    if (gameOver || isPaused || !activePiece) return;
+    
+    let dropY = position.y;
+    while (!checkCollision(activePiece.shape, position.x, dropY + 1, grid)) {
+      dropY++;
+    }
+    setPosition({ ...position, y: dropY });
+    // 다음 틱에 lockPiece가 호출되도록 강제하거나 직접 호출
+    // 여기서는 렌더링 후 다음 틱 처리를 위해 위치만 이동하고 
+    // 실제 락은 게임 루프나 다음 move(0,1)에서 처리되도록 함.
+    // 하지만 즉각적인 반응을 위해 수동으로 lockPiece 호출을 고려할 수 있으나,
+    // 상태 업데이트 비동기 문제로 인해 틱 주기에 맡기는 것이 안전할 수 있음.
+    // 다만 사용자 경험상 즉시 잠기는게 좋으므로, 별도 플래그나 로직 필요.
+    // 이 간단한 구현에서는 위치 이동 후 다음 자동 하강 틱에 락이 걸림.
+  }, [activePiece, grid, gameOver, isPaused, position]);
+
+
+  // 고스트 피스 위치 계산
+  const getGhostPosition = () => {
+    if (!activePiece) return position;
+    let ghostY = position.y;
+    while (!checkCollision(activePiece.shape, position.x, ghostY + 1, grid)) {
+      ghostY++;
+    }
+    return { x: position.x, y: ghostY };
+  };
+
+  // --- 게임 루프 ---
+  useEffect(() => {
+    const tick = (time) => {
+      if (!lastTimeRef.current) lastTimeRef.current = time;
+      const deltaTime = time - lastTimeRef.current;
+
+      if (gameStarted && !isPaused && !gameOver) {
+        if (!activePiece) {
+          spawnPiece();
+        } else if (deltaTime > speed) {
+          move(0, 1);
+          lastTimeRef.current = time;
+        }
+      }
+      requestRef.current = requestAnimationFrame(tick);
+    };
+
+    requestRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(requestRef.current);
+  }, [gameStarted, isPaused, gameOver, activePiece, speed, move, spawnPiece]);
+
+
+  // --- 키보드 컨트롤 ---
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (!gameStarted || gameOver) return;
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          move(-1, 0);
+          break;
+        case 'ArrowRight':
+          move(1, 0);
+          break;
+        case 'ArrowDown':
+          move(0, 1);
+          break;
+        case 'ArrowUp':
+          rotate();
+          break;
+        case ' ': // Spacebar
+          hardDrop();
+          break;
+        case 'p':
+        case 'P':
+          setIsPaused(prev => !prev);
+          break;
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [gameStarted, gameOver, move, rotate, hardDrop]);
+
+  // --- 렌더링 헬퍼 ---
+  const renderCell = (r, c) => {
+    let cellValue = grid[r][c];
+    let isGhost = false;
+    let isActive = false;
+
+    // 활성 블록 렌더링
+    if (activePiece && !gameOver) {
+      const { shape } = activePiece;
+      const { x, y } = position;
+      
+      // 블록 내부 좌표
+      const pieceR = r - y;
+      const pieceC = c - x;
+
+      if (pieceR >= 0 && pieceR < shape.length && pieceC >= 0 && pieceC < shape[0].length && shape[pieceR][pieceC]) {
+        cellValue = activePiece.key;
+        isActive = true;
+      }
+
+      // 고스트 블록 렌더링 (활성 블록이 없는 칸에만)
+      if (!isActive) {
+        const ghostPos = getGhostPosition();
+        const ghostR = r - ghostPos.y;
+        const ghostC = c - ghostPos.x;
+        if (ghostR >= 0 && ghostR < shape.length && ghostC >= 0 && ghostC < shape[0].length && shape[ghostR][ghostC]) {
+          cellValue = activePiece.key;
+          isGhost = true;
+        }
+      }
+    }
+
+    if (cellValue) {
+      const colorClass = SHAPES[cellValue].color;
+      if (isGhost) {
+        return <div key={`${r}-${c}`} className={`w-full h-full border border-white/20 opacity-30 ${colorClass}`} />;
+      }
+      return (
+        <div key={`${r}-${c}`} className={`w-full h-full border border-black/10 shadow-inner ${colorClass}`}>
+          <div className="w-full h-full border-t border-l border-white/30" />
+        </div>
+      );
+    }
+    
+    return <div key={`${r}-${c}`} className="w-full h-full border border-gray-800/50 bg-gray-900/50" />;
+  };
+
+  const renderNextPiece = () => {
+    if (!nextPiece) return null;
+    return (
+      <div className="grid grid-cols-4 gap-0.5 p-2 bg-gray-800 rounded-lg">
+        {nextPiece.shape.map((row, r) => 
+          row.map((cell, c) => (
+            <div key={`${r}-${c}`} className={`w-4 h-4 ${cell ? SHAPES[nextPiece.key].color : 'bg-transparent'}`} />
+          ))
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-4 touch-none select-none font-sans">
+      <h1 className="text-4xl font-bold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-600">
+        TETRIS
+      </h1>
+
+      <div className="flex flex-col md:flex-row gap-6 items-start justify-center">
+        {/* 왼쪽 패널: 점수 및 레벨 (데스크탑에서는 왼쪽, 모바일에서는 보드 아래) */}
+        <div className="w-full md:w-48 flex flex-col gap-4 order-2 md:order-1">
+          <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg">
+            <h3 className="text-gray-400 text-sm mb-1 uppercase tracking-wider">Score</h3>
+            <p className="text-2xl font-mono text-white font-bold mb-4">{score}</p>
+            
+            <h3 className="text-gray-400 text-sm mb-1 uppercase tracking-wider">Level</h3>
+            <p className="text-2xl font-mono text-yellow-400 font-bold">{level}</p>
+          </div>
+        </div>
+
+        {/* 메인 게임 보드 */}
+        <div className="relative border-4 border-gray-700 bg-black rounded-lg shadow-2xl overflow-hidden order-1 md:order-2">
+          <div 
+            className="grid grid-rows-[20] grid-cols-[10]"
+            style={{ 
+              display: 'grid', 
+              gridTemplateColumns: `repeat(${COLS}, minmax(20px, 30px))`, 
+              gridTemplateRows: `repeat(${ROWS}, minmax(20px, 30px))`
+            }}
+          >
+            {grid.map((row, r) => row.map((_, c) => renderCell(r, c)))}
+          </div>
+
+          {/* 오버레이 (게임 오버 / 일시정지) */}
+          {(gameOver || isPaused || !gameStarted) && (
+            <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-10 p-4 text-center">
+              {gameOver && <h2 className="text-3xl font-bold text-red-500 mb-2">GAME OVER</h2>}
+              {isPaused && <h2 className="text-3xl font-bold text-yellow-400 mb-2">PAUSED</h2>}
+              {!gameStarted && !gameOver && <h2 className="text-3xl font-bold text-cyan-400 mb-2">READY?</h2>}
+              
+              <div className="text-xl mb-6">점수: {score}</div>
+              
+              <button 
+                onClick={startGame}
+                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full font-bold text-lg hover:scale-105 transition-transform shadow-lg"
+              >
+                {gameOver || isPaused || gameStarted ? <RefreshCw size={20}/> : <Play size={20}/>}
+                {gameOver ? "다시 시작" : (isPaused ? "계속하기" : "게임 시작")}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 오른쪽 패널: 다음 블록 및 조작법 */}
+        <div className="w-full md:w-48 flex flex-col gap-4 order-3 md:order-3">
+          <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-lg flex flex-col items-center justify-center">
+            <h3 className="text-gray-400 text-sm mb-2 uppercase tracking-wider text-center">Next</h3>
+            {renderNextPiece()}
+          </div>
+          
+          <div className="hidden md:flex flex-col gap-2 text-xs text-gray-500 mt-4">
+            <p>⬅️ ➡️ : 이동</p>
+            <p>⬆️ : 회전</p>
+            <p>⬇️ : 내리기</p>
+            <p>SPACE : 한번에 내리기</p>
+            <p>P : 일시정지</p>
+          </div>
+        </div>
+      </div>
+
+      {/* 모바일 컨트롤 */}
+      <div className="mt-8 grid grid-cols-4 gap-4 w-full max-w-sm md:hidden">
+        {/* ... existing code ... */}
+        <button 
+          className="col-span-1 bg-gray-800 p-4 rounded-full active:bg-gray-700 flex justify-center items-center shadow-lg border border-gray-700"
+          onTouchStart={(e) => { e.preventDefault(); move(-1, 0); }}
+          onClick={() => move(-1, 0)}
+        >
+          <ArrowLeft size={24} />
+        </button>
+        
+        <button 
+          className="col-span-1 bg-gray-800 p-4 rounded-full active:bg-gray-700 flex justify-center items-center shadow-lg border border-gray-700"
+          onTouchStart={(e) => { e.preventDefault(); move(0, 1); }}
+          onClick={() => move(0, 1)}
+        >
+          <ArrowDown size={24} />
+        </button>
+        
+        <button 
+          className="col-span-1 bg-gray-800 p-4 rounded-full active:bg-gray-700 flex justify-center items-center shadow-lg border border-gray-700"
+          onTouchStart={(e) => { e.preventDefault(); move(1, 0); }}
+          onClick={() => move(1, 0)}
+        >
+          <ArrowRight size={24} />
+        </button>
+
+        <button 
+          className="col-span-1 bg-blue-600 p-4 rounded-full active:bg-blue-700 flex justify-center items-center shadow-lg shadow-blue-900/50"
+          onTouchStart={(e) => { e.preventDefault(); rotate(); }}
+          onClick={rotate}
+        >
+          <RotateCcw size={24} />
+        </button>
+
+        <button 
+          className="col-span-2 bg-gray-800 p-3 rounded-xl flex items-center justify-center gap-2 active:bg-gray-700 border border-gray-700"
+          onClick={() => setIsPaused(!isPaused)}
+        >
+          {isPaused ? <Play size={20} /> : <Pause size={20} />}
+          <span className="text-sm font-bold">{isPaused ? "재개" : "일시정지"}</span>
+        </button>
+
+        <button 
+          className="col-span-2 bg-purple-600 p-3 rounded-xl flex items-center justify-center gap-2 active:bg-purple-700 shadow-lg shadow-purple-900/50"
+          onTouchStart={(e) => { e.preventDefault(); hardDrop(); }}
+          onClick={hardDrop}
+        >
+          <ArrowUp size={20} className="stroke-[3]" />
+          <span className="text-sm font-bold">Hard Drop</span>
+        </button>
+      </div>
+    </div>
+  );
+}
